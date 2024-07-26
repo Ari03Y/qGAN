@@ -72,7 +72,7 @@ def calculate_kl_div(model_distribution: dict, target_distribution: dict):
 # Gen cost function
 def generator_cost(gen_params, disc_params, gen_disc_circuit):
     curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy())
-    state_probs = Statevector(gen_disc_circuit.bind_parameters(curr_params)).probabilities()
+    state_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities()
     prob_fake_true = np.sum(state_probs[0b100:])
     cost = -prob_fake_true
     return torch.tensor(cost, requires_grad=True)
@@ -81,8 +81,8 @@ def generator_cost(gen_params, disc_params, gen_disc_circuit):
 # Discrim cost function
 def discriminator_cost(disc_params, gen_params, gen_disc_circuit, real_disc_circuit):
     curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy())
-    gendisc_probs = Statevector(gen_disc_circuit.bind_parameters(curr_params)).probabilities()
-    realdisc_probs = Statevector(real_disc_circuit.bind_parameters(disc_params.detach().numpy())).probabilities()
+    gendisc_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities()
+    realdisc_probs = Statevector(real_disc_circuit.assign_parameters(disc_params.detach().numpy())).probabilities()
     prob_fake_true = np.sum(gendisc_probs[0b100:])
     prob_real_true = np.sum(realdisc_probs[0b100:])
     cost = prob_fake_true - prob_real_true
@@ -123,18 +123,20 @@ dloss = []
 kl_div = []
 
 
-#GAN Training
+#ML Training
 TABLE_HEADERS = "Epoch | Generator cost | Discriminator cost | KL Div. |"
 print(TABLE_HEADERS)
+
 for epoch in range(100):
-    D_STEPS = 5  # Discriminator updates per generator update
+    D_STEPS = 5  
     for disc_train_step in range(D_STEPS):
         d_fake = torch.tensor(disc_fake_qnn.backward(gen_params.detach().numpy(), disc_params.detach().numpy())[1]).to_dense()[0, 0b100:]
-        d_fake = np.sum(d_fake, axis=0)
+        d_fake = torch.sum(d_fake, axis=0)
         d_real = torch.tensor(disc_real_qnn.backward([], disc_params.detach().numpy())[1]).to_dense()[0, 0b100:]
-        d_real = np.sum(d_real, axis=0)
+        d_real = torch.sum(d_real, axis=0)
         grad_dcost = [d_fake[i] - d_real[i] for i in range(N_DPARAMS)]
-        grad_dcost = torch.tensor(grad_dcost, dtype=torch.float32)
+        grad_dcost = torch.tensor(grad_dcost, dtype=torch.double)
+
         discriminator_optimizer.zero_grad()
         disc_params.grad = grad_dcost
         discriminator_optimizer.step()
@@ -143,17 +145,16 @@ for epoch in range(100):
             dloss.append(discriminator_cost(disc_params, gen_params, gen_disc_circuit, real_disc_circuit).item())
 
     for gen_train_step in range(1):
-        grads = torch.tensor(gen_qnn.backward(disc_params.detach().numpy(), gen_params).detach().numpy())
-        grads = grads[1].to_dense()[0][0b100:]
+        grads = torch.tensor(gen_qnn.backward(disc_params.detach().numpy(), gen_params.detach().numpy())[1]).to_dense()[0][0b100:]
         grads = -torch.sum(grads, axis=0)
-        grads = torch.tensor(grads, dtype=torch.float32)
+        grads = torch.tensor(grads, dtype=torch.double)
 
         generator_optimizer.zero_grad()
         gen_params.grad = grads
         generator_optimizer.step()
         gloss.append(generator_cost(gen_params, disc_params, gen_disc_circuit).item())
 
-    gen_checkpoint_circuit = generator.bind_parameters(gen_params.detach().numpy())
+    gen_checkpoint_circuit = generator.assign_parameters(gen_params.detach().numpy())
     gen_prob_dict = Statevector(gen_checkpoint_circuit).probabilities_dict()
     real_prob_dict = Statevector(real_circuit).probabilities_dict()
     current_kl = calculate_kl_div(gen_prob_dict, real_prob_dict)
