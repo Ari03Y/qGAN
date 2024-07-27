@@ -1,129 +1,121 @@
 import numpy as np
-import torch
-import pickle
-import matplotlib.pyplot as plt
 from qiskit import QuantumCircuit
-from qiskit_aer import AerSimulator
+from qiskit_aer import AerSimulator, Aer
 from qiskit.visualization import plot_histogram
-from qiskit.circuit import ParameterVector
+from qiskit.circuit import ParameterVector, Parameter
+import torch
+import torch.optim as optim
+import matplotlib.pyplot as plt
 from qiskit.primitives import Sampler
 from qiskit_machine_learning.neural_networks import SamplerQNN
-from qiskit.circuit import Parameter
 from qiskit.quantum_info import Statevector
+import sparse
 from qiskit.circuit.library import TwoLocal
-from torch import optim
+import scipy as sp
+import pickle 
 
-#Num layers
 REAL_DIST_NQUBITS = 2
 
-#Real sample
+# Real
 real_circuit = QuantumCircuit(REAL_DIST_NQUBITS)
 real_circuit.h(0)
-real_circuit.cx(0, 1)
-real_circuit.draw('mpl')
+real_circuit.cx(0,1)
 
-#Generator
-generator = TwoLocal(REAL_DIST_NQUBITS, ['ry', 'rz'], 'cz', 'full', reps=2, parameter_prefix='θ_g', name='Generator')
-generator = generator.decompose()
-generator.draw('mpl')
+# Generator
+generator = TwoLocal(REAL_DIST_NQUBITS, ['rx', 'rz','cx','rzz'],entanglement_blocks= None, entanglement='full', reps=1, parameter_prefix='θ_g', name='Generator')
+generator = generator.decompose() 
 
-#Discriminator
-disc_weights = ParameterVector('θ_d', 12)
-discriminator = QuantumCircuit(3, name="Discriminator")
-discriminator.h(0)
-for i in range(3):
-    discriminator.rx(disc_weights[i * 3], i)
-    discriminator.ry(disc_weights[i * 3 + 1], i)
-    discriminator.rz(disc_weights[i * 3 + 2], i)
-discriminator.cx(0, 2)
-discriminator.cx(1, 2)
-discriminator.rx(disc_weights[9], 2)
-discriminator.ry(disc_weights[10], 2)
-discriminator.rz(disc_weights[11], 2)
+# Discriminator
+θ_d = Parameter("θ_d[30]")
+discriminator = TwoLocal(3, ['rx', 'rz'],entanglement_blocks= ['cx','rzz'], entanglement='pairwise', reps=3, parameter_prefix='θ_d', name='Discriminator')
+discriminator = discriminator.decompose()
+discriminator.cx(0,1)
+discriminator.cx(1,2)
+discriminator.rzz(θ_d, 0, 1)
+θ_d = Parameter("θ_d[31]")
+discriminator.rzz(θ_d, 1, 2)
 discriminator.draw('mpl')
+
 
 N_GPARAMS = generator.num_parameters
 N_DPARAMS = discriminator.num_parameters
 
-gen_disc_circuit = QuantumCircuit(REAL_DIST_NQUBITS + 1)
+gen_disc_circuit = QuantumCircuit(REAL_DIST_NQUBITS+1)
 gen_disc_circuit.compose(generator, inplace=True)
+gen_disc_circuit.barrier()
 gen_disc_circuit.compose(discriminator, inplace=True)
-gen_disc_circuit.draw('mpl')
 
-# Real ceation
-real_disc_circuit = QuantumCircuit(REAL_DIST_NQUBITS + 1)
+real_disc_circuit = QuantumCircuit(REAL_DIST_NQUBITS+1)
 real_disc_circuit.compose(real_circuit, inplace=True)
+real_disc_circuit.barrier()
 real_disc_circuit.compose(discriminator, inplace=True)
-real_disc_circuit.draw('mpl')
 
-# Functions
-def calculate_kl_div(model_distribution: dict, target_distribution: dict):
-    kl_div = 0
-    for bitstring, p_data in target_distribution.items():
-        if np.isclose(p_data, 0, atol=1e-8):
-            continue
-        if bitstring in model_distribution.keys():
-            kl_div += (p_data * np.log(p_data) - p_data * np.log(model_distribution[bitstring]))
-        else:
-            kl_div += p_data * np.log(p_data) - p_data * np.log(1e-6)
-    return kl_div
-
-
-# Gen cost function
+# Generator cost function
 def generator_cost(gen_params, disc_params, gen_disc_circuit):
     curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy())
     state_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities()
     prob_fake_true = np.sum(state_probs[0b100:])
-    cost = -prob_fake_true
+    cost = -prob_fake_true 
     return torch.tensor(cost, requires_grad=True)
 
-
-# Discrim cost function
+# Discriminator cost function
 def discriminator_cost(disc_params, gen_params, gen_disc_circuit, real_disc_circuit):
     curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy())
     gendisc_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities()
     realdisc_probs = Statevector(real_disc_circuit.assign_parameters(disc_params.detach().numpy())).probabilities()
     prob_fake_true = np.sum(gendisc_probs[0b100:])
     prob_real_true = np.sum(realdisc_probs[0b100:])
-    cost = prob_fake_true - prob_real_true
+    cost =  prob_fake_true - prob_real_true
     return torch.tensor(cost, requires_grad=True)
 
+"""Kullback Leibler Divergence"""
+def calculate_kl_div(model_distribution: dict, target_distribution: dict):
+    kl_div = 0
+    for bitstring, p_data in target_distribution.items():
+        if np.isclose(p_data, 0, atol=1e-8):
+            continue
+        if bitstring in model_distribution.keys():
+            kl_div += (p_data * np.log(p_data)
+                 - p_data * np.log(model_distribution[bitstring]))
+        else:
+            kl_div += p_data * np.log(p_data) - p_data * np.log(1e-6)
+    return kl_div
 
-# Neural Network initialization
+
+
+#NN
 sampler = Sampler()
-gen_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=generator.parameters,
-                     weight_params=discriminator.parameters, sparse=None)
-disc_fake_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=discriminator.parameters,
-                           weight_params=generator.parameters, sparse=None)
-disc_real_qnn = SamplerQNN(circuit=real_disc_circuit, input_params=[], weight_params=discriminator.parameters,
-                           sampler=sampler, sparse=None)
+#** THIS CODE IS RAISING ERROR ** vvvv
+gen_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=gen_disc_circuit.parameters, 
+                     weight_params=gen_disc_circuit.parameters, sparse=False) # 
+
+disc_fake_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=discriminator.parameters, 
+                            weight_params=generator.parameters, sparse=False)
+disc_real_qnn = SamplerQNN(circuit=real_disc_circuit, input_params=[], weight_params=discriminator.parameters, 
+                           sampler=sampler, sparse = False)
 
 
-
-# Initialization
+# Initializing NN parameters
 init_gen_params = np.random.uniform(low=-np.pi, high=np.pi, size=(N_GPARAMS,))
 init_disc_params = np.random.uniform(low=-np.pi, high=np.pi, size=(N_DPARAMS,))
-
 gen_params = torch.tensor(init_gen_params, requires_grad=True)
 disc_params = torch.tensor(init_disc_params, requires_grad=True)
 
+#Creating G prob distribution
 init_gen_circuit = generator.assign_parameters(init_gen_params)
 init_prob_dict = Statevector(init_gen_circuit).probabilities_dict()
+# fig, ax1 = plt.subplots(1, 1, sharey=True)
+# ax1.set_title("Initial generator distribution")
+# plot_histogram(init_prob_dict, ax=ax1)
 
-fig, ax1 = plt.subplots(1, 1, sharey=True)
-ax1.set_title("Initial generator distribution")
-plot_histogram(init_prob_dict, ax=ax1)
-
+#ML Training
 generator_optimizer = optim.Adam([gen_params], lr=0.02)
 discriminator_optimizer = optim.Adam([disc_params], lr=0.02)
-
-best_gen_params = gen_params.clone().detach().requires_grad_(True)
+best_gen_params = torch.tensor(init_gen_params, requires_grad=True)
 gloss = []
 dloss = []
 kl_div = []
 
-
-#ML Training
 TABLE_HEADERS = "Epoch | Generator cost | Discriminator cost | KL Div. |"
 print(TABLE_HEADERS)
 
@@ -167,3 +159,29 @@ for epoch in range(100):
         for header, val in zip(TABLE_HEADERS.split('|'), (epoch, gloss[-1], dloss[-1], kl_div[-1])):
             print(f"{val:.3g} ".rjust(len(header)), end="|")
         print()
+
+
+fig, (loss, kl) = plt.subplots(2, sharex=True,gridspec_kw={'height_ratios': [0.75, 1]},figsize=(6,4))
+fig.suptitle('QGAN training stats')
+fig.supxlabel('Training epoch')
+loss.plot(range(len(gloss)), gloss, label="Generator loss")
+loss.plot(range(len(dloss)), dloss, label="Discriminator loss",
+          color="C3")
+loss.legend()
+loss.set(ylabel='Loss')
+kl.plot(range(len(kl_div)), kl_div, label="Kullback-Leibler Divergence",
+        color="C1")
+kl.set(ylabel='Kullback-Leibler Divergence')
+kl.legend()
+fig.tight_layout()
+
+# Create test circuit with new parameters
+gen_checkpoint_circuit = generator.assign_parameters(best_gen_params)
+gen_prob_dict = Statevector(gen_checkpoint_circuit).probabilities_dict()
+real_prob_dict = Statevector(real_circuit).probabilities_dict()
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8,3))
+plot_histogram(gen_prob_dict, ax=ax1)
+ax1.set_title("Trained generator distribution")
+plot_histogram(real_prob_dict, ax=ax2)
+ax2.set_title("Real distribution")
+fig.tight_layout()
