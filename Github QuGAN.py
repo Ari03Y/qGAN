@@ -107,9 +107,9 @@ gloss = []
 dloss = []
 kl_div = []
 
+# QuGAN Training
 TABLE_HEADERS = "Epoch | Generator cost | Discriminator cost | KL Div. |"
 print(TABLE_HEADERS)
-
 for epoch in range(100):
     D_STEPS = 5  
     for disc_train_step in range(D_STEPS):
