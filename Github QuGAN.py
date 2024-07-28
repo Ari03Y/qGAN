@@ -96,12 +96,16 @@ init_disc_params = np.random.uniform(low=-np.pi, high=np.pi, size=disc_para)
 gen_params = torch.tensor(init_gen_params, requires_grad=True)
 disc_params = torch.tensor(init_disc_params, requires_grad=True)
 
-#Creating G prob distribution
+# Creating G prob distribution
 init_gen_circuit = generator.assign_parameters(init_gen_params)
 init_prob_dict = Statevector(init_gen_circuit).probabilities_dict()
-fig, ax1 = plt.subplots(1, 1, sharey=True)
+real_prob_dict = Statevector(real_distr_circuit).probabilities_dict()
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8,3))
 ax1.set_title("Initial generator distribution")
 plot_histogram(init_prob_dict, ax=ax1)
+ax2.set_title("Real distribution")
+plot_histogram(real_prob_dict, ax=ax2)
+fig.tight_layout()
 
 #ML Training
 generator_optimizer = optim.Adam([gen_params], lr=0.02)
