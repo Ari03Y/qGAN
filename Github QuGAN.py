@@ -13,28 +13,31 @@ import sparse
 from qiskit.circuit.library import TwoLocal
 import scipy as sp
 import pickle 
+from qiskit_machine_learning.connectors import TorchConnector
 
 num_qubits = 2
 
-# Generator
-generator = TwoLocal(num_qubits, ['rx', 'rz','cx','rzz'],entanglement_blocks= None, entanglement='full', reps=1, parameter_prefix='θ_g', name='Generator')
-generator = generator.decompose() 
+# Generator Initialization
+generator = TwoLocal(num_qubits, ['rx', 'rz','cx','rzz'],entanglement_blocks= None, entanglement='full', reps=7, parameter_prefix='θ_g', name='Generator')
+generator = generator.decompose()
 
-# Real distribution
+# Real distribution Initialization
 real_distr_circuit = QuantumCircuit(num_qubits)
 real_distr_circuit.h(0)
 real_distr_circuit.cx(0,1)
 
-# Discriminator
-θ_d = Parameter("θ_d[30]")
-discriminator = TwoLocal(3, ['rx', 'rz'],entanglement_blocks= ['cx','rzz'], entanglement='pairwise', reps=3, parameter_prefix='θ_d', name='Discriminator')
+# Discriminator Initialization
+θ_d = Parameter("θ_d[38]")
+discriminator = TwoLocal(num_qubits+1, ['rx', 'rz'],entanglement_blocks= ['cx','rzz'], entanglement='linear', reps=4, parameter_prefix='θ_d', name='Discriminator')
 discriminator = discriminator.decompose()
-discriminator.cx(0,1)
-discriminator.cx(1,2)
+for i in range(num_qubits):
+    discriminator.cx(i,i+1)
 discriminator.rzz(θ_d, 0, 1)
-θ_d = Parameter("θ_d[31]")
+θ_d = Parameter("θ_d[39]")
 discriminator.rzz(θ_d, 1, 2)
-discriminator.draw('mpl')
+
+gen_para = generator.num_parameters
+disc_para = discriminator.num_parameters
 
 gen_disc_circuit = QuantumCircuit(num_qubits+1)
 gen_disc_circuit.compose(generator, inplace=True)
@@ -77,27 +80,28 @@ def calculate_kl_div(model_distribution: dict, target_distribution: dict):
             kl_div += p_data * np.log(p_data) - p_data * np.log(1e-6)
     return kl_div
 
-# NN
+# Neural Network Initialization
 sampler = Sampler()
-gen_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=[], 
-                     weight_params=gen_disc_circuit.parameters, sparse=False) 
-disc_fake_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=[], 
-                            weight_params=gen_disc_circuit.parameters, sparse=False)
+
+gen_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=gen_disc_circuit.parameters[:disc_para], 
+                     weight_params=gen_disc_circuit.parameters[disc_para:], sparse=False) 
+disc_fake_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=gen_disc_circuit.parameters[disc_para:], 
+                            weight_params=gen_disc_circuit.parameters[:disc_para], sparse=False)
 disc_real_qnn = SamplerQNN(circuit=real_disc_circuit, sampler=sampler, input_params=[], 
-                           weight_params=real_disc_circuit.parameters, sparse = False)
+                           weight_params=gen_disc_circuit.parameters[:disc_para], sparse = False)
 
 # Initializing NN parameters
-init_gen_params = np.random.uniform(low=-np.pi, high=np.pi, size=(generator.num_parameters))
-init_disc_params = np.random.uniform(low=-np.pi, high=np.pi, size=(discriminator.num_parameters))
+init_gen_params = np.random.uniform(low=-np.pi, high=np.pi, size=gen_para)
+init_disc_params = np.random.uniform(low=-np.pi, high=np.pi, size=disc_para)
 gen_params = torch.tensor(init_gen_params, requires_grad=True)
 disc_params = torch.tensor(init_disc_params, requires_grad=True)
 
 #Creating G prob distribution
 init_gen_circuit = generator.assign_parameters(init_gen_params)
 init_prob_dict = Statevector(init_gen_circuit).probabilities_dict()
-# fig, ax1 = plt.subplots(1, 1, sharey=True)
-# ax1.set_title("Initial generator distribution")
-# plot_histogram(init_prob_dict, ax=ax1)
+fig, ax1 = plt.subplots(1, 1, sharey=True)
+ax1.set_title("Initial generator distribution")
+plot_histogram(init_prob_dict, ax=ax1)
 
 #ML Training
 generator_optimizer = optim.Adam([gen_params], lr=0.02)
@@ -107,9 +111,9 @@ gloss = []
 dloss = []
 kl_div = []
 
-# QuGAN Training
 TABLE_HEADERS = "Epoch | Generator cost | Discriminator cost | KL Div. |"
 print(TABLE_HEADERS)
+
 for epoch in range(100):
     D_STEPS = 5  
     for disc_train_step in range(D_STEPS):
@@ -151,7 +155,6 @@ for epoch in range(100):
             print(f"{val:.3g} ".rjust(len(header)), end="|")
         print()
 
-# Line graph for cost functions and KL Divergence
 fig, (loss, kl) = plt.subplots(2, sharex=True,gridspec_kw={'height_ratios': [0.75, 1]},figsize=(6,4))
 fig.suptitle('QGAN training stats')
 fig.supxlabel('Training epoch')
@@ -166,7 +169,7 @@ kl.set(ylabel='Kullback-Leibler Divergence')
 kl.legend()
 fig.tight_layout()
 
-# Compare generator and real distributions via bar graph
+# Create test circuit with new parameters
 gen_checkpoint_circuit = generator.assign_parameters(best_gen_params)
 gen_prob_dict = Statevector(gen_checkpoint_circuit).probabilities_dict()
 real_prob_dict = Statevector(real_distr_circuit).probabilities_dict()
