@@ -1,5 +1,3 @@
-'''NEW Working Code'''
-
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
@@ -98,12 +96,6 @@ disc_params = torch.tensor(init_disc_params, requires_grad=True)
 init_gen_circuit = generator.assign_parameters(init_gen_params)
 init_prob_dict = Statevector(init_gen_circuit).probabilities_dict()
 real_prob_dict = Statevector(real_distr_circuit).probabilities_dict()
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 3))
-ax1.set_title("Initial generator distribution")
-plot_histogram(init_prob_dict, ax=ax1)
-ax2.set_title("Real distribution")
-plot_histogram(real_prob_dict, ax=ax2)
-fig.tight_layout()
 
 # ML Training
 beta1 = 0.7
@@ -120,7 +112,7 @@ TABLE_HEADERS = "Epoch | Generator cost | Discriminator cost | KL Div. |"
 print(TABLE_HEADERS)
 
 for epoch in range(50):  
-    D_STEPS = 2
+    D_STEPS = 5
     for disc_train_step in range(D_STEPS):
         d_fake = torch.tensor(disc_fake_qnn.backward(gen_params.detach().numpy(), disc_params.detach().numpy())[1]).to_dense()[0, 0b100:]
         d_fake = torch.sum(d_fake, axis=0)
@@ -160,25 +152,39 @@ for epoch in range(50):
             print(f"{val:.3g} ".rjust(len(header)), end="|")
         print()
 
-fig, (loss, kl) = plt.subplots(2, sharex=True, gridspec_kw={'height_ratios': [0.75, 1]}, figsize=(6, 4))
-fig.suptitle('QGAN training stats')
-fig.supxlabel('Training epoch')
-loss.plot(range(len(gloss)), gloss, label="Generator loss")
-loss.plot(range(len(dloss)), dloss, label="Discriminator loss", color="C3")
-loss.legend()
-loss.set(ylabel='Loss')
-kl.plot(range(len(kl_div)), kl_div, label="Kullback-Leibler Divergence", color="C1")
-kl.set(ylabel='Kullback-Leibler Divergence')
-kl.legend()
-fig.tight_layout()
+fig, axs = plt.subplots(2, 3, figsize=(18, 8))
 
-# Create test circuit with new parameters
+# Plot initial generator distribution
+axs[0, 0].set_title("Initial generator distribution")
+plot_histogram(init_prob_dict, ax=axs[0, 0])
+
+# Plot real distribution
+axs[0, 1].set_title("Real distribution")
+plot_histogram(real_prob_dict, ax=axs[0, 1])
+
+# Plot trained generator distribution
 gen_checkpoint_circuit = generator.assign_parameters(best_gen_params)
 gen_prob_dict = Statevector(gen_checkpoint_circuit).probabilities_dict()
-real_prob_dict = Statevector(real_distr_circuit).probabilities_dict()
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 3))
-plot_histogram(gen_prob_dict, ax=ax1)
-ax1.set_title("Trained generator distribution")
-plot_histogram(real_prob_dict, ax=ax2)
-ax2.set_title("Real distribution")
-fig.tight_layout()
+axs[0, 2].set_title("Trained generator distribution")
+plot_histogram(gen_prob_dict, ax=axs[0, 2])
+
+# Plot losses
+axs[1, 0].set_title("Losses")
+axs[1, 0].plot(range(len(gloss)), gloss, label="Generator loss")
+axs[1, 0].plot(range(len(dloss)), dloss, label="Discriminator loss", color="C3")
+axs[1, 0].set_xlabel("Training epoch")
+axs[1, 0].set_ylabel("Loss")
+axs[1, 0].legend()
+
+# Plot KL Divergence
+axs[1, 1].set_title("Kullback-Leibler Divergence")
+axs[1, 1].plot(range(len(kl_div)), kl_div, label="KL Divergence", color="C1")
+axs[1, 1].set_xlabel("Training epoch")
+axs[1, 1].set_ylabel("KL Divergence")
+axs[1, 1].legend()
+
+# Remove the empty subplot in the second row, third column
+fig.delaxes(axs[1, 2])
+
+plt.tight_layout()
+plt.show()
