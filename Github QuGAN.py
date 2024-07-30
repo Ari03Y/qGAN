@@ -1,3 +1,5 @@
+'''NEW Working Code'''
+
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
@@ -19,7 +21,7 @@ num_qubits = 2
 generator = TwoLocal(num_qubits, ['rx', 'rz', 'cx', 'rzz'], entanglement_blocks=None, entanglement='full', reps=3, parameter_prefix='θ_g', name='Generator')
 generator = generator.decompose()
 
-# Real Distribution Initialization
+# Real distribution Initialization
 real_distr_circuit = QuantumCircuit(num_qubits)
 real_distr_circuit.h(0)
 real_distr_circuit.cx(0, 1)
@@ -48,56 +50,55 @@ real_disc_circuit.barrier()
 real_disc_circuit.compose(discriminator, inplace=True)
 
 # Generator cost function
-def generator_cost(gen_params, disc_params, gen_disc_circuit): # gen_params & disc_params is a tensor
-    curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy()) # converts pytorch tensors into numpy array and appends it to one array
-    state_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities() # takes numpy array of current params and assigns them to gen disc, initalizing state vector resulting from qc, takes probabilty of statevector and puts it into an ndarray
-    prob_fake_true = np.sum(state_probs[0b100:]) # sum ndarray of probabilities from 4 to the end, sums probability of getting a statevector with a 1 in the end (indicates it's fake)
-    cost = abs(-prob_fake_true) # probability/indication that data is fake, absolute value
-    return torch.tensor(cost, requires_grad=True) # returns cost as a tensor
+def generator_cost(gen_params, disc_params, gen_disc_circuit):
+    curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy())
+    state_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities()
+    prob_fake_true = np.sum(state_probs[0b100:])
+    cost = abs(-prob_fake_true) 
+    return torch.tensor(cost, requires_grad=True)
 
 # Discriminator cost function
 def discriminator_cost(disc_params, gen_params, gen_disc_circuit, real_disc_circuit):
     curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy())
     gendisc_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities()
     realdisc_probs = Statevector(real_disc_circuit.assign_parameters(disc_params.detach().numpy())).probabilities()
-    prob_fake_true = np.sum(gendisc_probs[0b100:]) # probability discriminator correctly classifies fake as fake 
-    prob_real_true = np.sum(realdisc_probs[0b100:]) # probability discriminator correctly classifies real as real
-    cost = abs(prob_fake_true - prob_real_true) # cost function, when probabilities for classifying both correctly are high, cost is close to 0
+    prob_fake_true = np.sum(gendisc_probs[0b100:])
+    prob_real_true = np.sum(realdisc_probs[0b100:])
+    cost = abs(prob_fake_true - prob_real_true)
     return torch.tensor(cost, requires_grad=True)
 
-# Kullback-Leibler Divergence
-def calculate_kl_div(model_distribution: dict, target_distribution: dict): # keys are bitstrings, values are probabilities 
+# Kullback Leibler Divergence
+def calculate_kl_div(model_distribution: dict, target_distribution: dict):
     kl_div = 0
     for bitstring, p_data in target_distribution.items():
-        if np.isclose(p_data, 0, atol=1e-8): # checks if probability is close to 0 with tolerance atol, goes to next iteration if true
+        if np.isclose(p_data, 0, atol=1e-8):
             continue
         if bitstring in model_distribution.keys():
-            kl_div += (p_data * np.log(p_data) - p_data * np.log(model_distribution[bitstring])) # entropy of bitrstring in target distribution subtracted by the cross-entropy term 
+            kl_div += (p_data * np.log(p_data) - p_data * np.log(model_distribution[bitstring]))
         else:
-            kl_div += p_data * np.log(p_data) - p_data * np.log(1e-6) # back up cross entropy 
+            kl_div += p_data * np.log(p_data) - p_data * np.log(1e-6)
     return kl_div
 
 # Neural Network Initialization
-sampler = Sampler() # stimulates circuit without measuring circuit, allows for the efficient sampling of measurement,  obtain the necessary probability distributions for the QNNs
-
+sampler = Sampler()
 gen_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=gen_disc_circuit.parameters[:disc_para], 
                      weight_params=gen_disc_circuit.parameters[disc_para:], sparse=False) 
-disc_fake_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=gen_disc_circuit.parameters[disc_para:], # input is generators weights
-                            weight_params=gen_disc_circuit.parameters[:disc_para], sparse=False) # changes generators input params, loops
-disc_real_qnn = SamplerQNN(circuit=real_disc_circuit, sampler=sampler, input_params=[],  # no input bc real
-                           weight_params=gen_disc_circuit.parameters[:disc_para], sparse=False) # changes disc params to improve it
+disc_fake_qnn = SamplerQNN(circuit=gen_disc_circuit, sampler=sampler, input_params=gen_disc_circuit.parameters[disc_para:], 
+                            weight_params=gen_disc_circuit.parameters[:disc_para], sparse=False)
+disc_real_qnn = SamplerQNN(circuit=real_disc_circuit, sampler=sampler, input_params=[], 
+                           weight_params=gen_disc_circuit.parameters[:disc_para], sparse=False)
 
 # Initializing NN parameters
-init_gen_params = np.random.uniform(low=-np.pi, high=np.pi, size=gen_para) # generate random params
+init_gen_params = np.random.uniform(low=-np.pi, high=np.pi, size=gen_para)
 init_disc_params = np.random.uniform(low=-np.pi, high=np.pi, size=disc_para)
-gen_params = torch.tensor(init_gen_params, requires_grad=True) # convert params into tensor 
+gen_params = torch.tensor(init_gen_params, requires_grad=True)
 disc_params = torch.tensor(init_disc_params, requires_grad=True)
 
 # Creating G prob distribution
-init_gen_circuit = generator.assign_parameters(init_gen_params) # assign initialized gen params to gen circuit 
-init_prob_dict = Statevector(init_gen_circuit).probabilities_dict() # initalize state vector from gen circuit and get probs in a dict
-real_prob_dict = Statevector(real_distr_circuit).probabilities_dict() # do the same with real circuit
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 3)) # plots bar graph for the distribution
+init_gen_circuit = generator.assign_parameters(init_gen_params)
+init_prob_dict = Statevector(init_gen_circuit).probabilities_dict()
+real_prob_dict = Statevector(real_distr_circuit).probabilities_dict()
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 3))
 ax1.set_title("Initial generator distribution")
 plot_histogram(init_prob_dict, ax=ax1)
 ax2.set_title("Real distribution")
@@ -105,9 +106,12 @@ plot_histogram(real_prob_dict, ax=ax2)
 fig.tight_layout()
 
 # ML Training
-generator_optimizer = optim.Adam([gen_params], lr=0.02) # optimizer with params and learning rate 
-discriminator_optimizer = optim.Adam([disc_params], lr=0.02)
-best_gen_params = torch.tensor(init_gen_params, requires_grad=True) # updates gens to best params found in the training
+beta1 = 0.7
+beta2 = 0.999
+decay = 0.005
+generator_optimizer = optim.Adam([gen_params], lr=0.02, betas=(beta1,beta2), weight_decay=decay)
+discriminator_optimizer = optim.Adam([disc_params], lr=0.02, betas=(beta1,beta2), weight_decay=decay)
+best_gen_params = torch.tensor(init_gen_params, requires_grad=True)
 gloss = []
 dloss = []
 kl_div = []
@@ -115,20 +119,17 @@ kl_div = []
 TABLE_HEADERS = "Epoch | Generator cost | Discriminator cost | KL Div. |"
 print(TABLE_HEADERS)
 
-for epoch in range(100):  
-    D_STEPS = 5
-    for disc_train_step in range(D_STEPS): 
-        # computes gradients for fake data 
+for epoch in range(50):  
+    D_STEPS = 2
+    for disc_train_step in range(D_STEPS):
         d_fake = torch.tensor(disc_fake_qnn.backward(gen_params.detach().numpy(), disc_params.detach().numpy())[1]).to_dense()[0, 0b100:]
         d_fake = torch.sum(d_fake, axis=0)
-        # computes gradients for real data
         d_real = torch.tensor(disc_real_qnn.backward([], disc_params.detach().numpy())[1]).to_dense()[0, 0b100:]
         d_real = torch.sum(d_real, axis=0)
-        # calculate gradient diff/loss, if subtracted ans is small or 0, then discrim is classiflying correctly 
         grad_dcost = [d_fake[i] - d_real[i] for i in range(discriminator.num_parameters)]
         grad_dcost = torch.tensor(grad_dcost, dtype=torch.double)
 
-        discriminator_optimizer.zero_grad() # update discriminator parameters 
+        discriminator_optimizer.zero_grad()
         disc_params.grad = grad_dcost
         discriminator_optimizer.step()
 
