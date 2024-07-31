@@ -49,9 +49,16 @@ real_disc_circuit.compose(discriminator, inplace=True)
 
 # Generator cost function
 def generator_cost(gen_params, disc_params, gen_disc_circuit):
-    curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy())
-    state_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities()
+    # converts pytorch tensors into numpy array and appends it to one array
+    curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy()) 
+    
+    # takes numpy array of current params and assigns them to gen disc, initalizing state vector resulting from qc, takes probabilty of statevector and puts it into an ndarray
+    state_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities() 
+
+    # sum ndarray of probabilities from 4 to the end, sums probability of getting a statevector with a 1 in the end (indicates it's fake)
     prob_fake_true = np.sum(state_probs[0b100:])
+
+    # probability/indication that data is fake, absolute value
     cost = abs(-prob_fake_true) 
     return torch.tensor(cost, requires_grad=True)
 
@@ -60,9 +67,9 @@ def discriminator_cost(disc_params, gen_params, gen_disc_circuit, real_disc_circ
     curr_params = np.append(disc_params.detach().numpy(), gen_params.detach().numpy())
     gendisc_probs = Statevector(gen_disc_circuit.assign_parameters(curr_params)).probabilities()
     realdisc_probs = Statevector(real_disc_circuit.assign_parameters(disc_params.detach().numpy())).probabilities()
-    prob_fake_true = np.sum(gendisc_probs[0b100:])
-    prob_real_true = np.sum(realdisc_probs[0b100:])
-    cost = abs(prob_fake_true - prob_real_true)
+    prob_fake_true = np.sum(gendisc_probs[0b100:]) # probability discriminator correctly classifies fake as fake 
+    prob_real_true = np.sum(realdisc_probs[0b100:]) # probability discriminator correctly classifies real as real
+    cost = abs(prob_fake_true - prob_real_true) # cost function, when probabilities for classifying both correctly are high, cost is close to 0
     return torch.tensor(cost, requires_grad=True)
 
 # Kullback Leibler Divergence
